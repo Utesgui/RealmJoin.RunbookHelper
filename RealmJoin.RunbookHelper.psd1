@@ -17,7 +17,8 @@
         'Invoke-RjRbRestMethod', 'Invoke-RjRbRestMethodGraph', 'Invoke-RjRbRestMethodDefenderATP',
         'Connect-RjRbAzAccount', 'Connect-RjRbAzureAD', 'Get-RjRbAzureADTenantDetail', 'Connect-RjRbExchangeOnline',
         'Connect-RjRbGraph', 'Connect-RjRbDefenderATP', 'Send-RjReportEmail',
-        'Publish-RjRbFilesToStorageContainer'
+        'Publish-RjRbFilesToStorageContainer',
+        'Publish-RjRbKeyVaultSecret', 'Publish-RjRbKeyVaultKey', 'Publish-RjRbKeyVaultCertificate'
     )
     CmdletsToExport   = @()
     AliasesToExport   = @('Use-RJInterface')
@@ -35,6 +36,7 @@
         'Logging.ps1',
         'MailReport.ps1',
         'FileReport.ps1',
+        'KeyVault.ps1',
         'Rest.ps1',
         'Assets\Header.png',
         'Assets\Footer.png'
