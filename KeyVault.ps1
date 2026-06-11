@@ -1,7 +1,7 @@
 # --- Key Vault publishing ----------------------------------------------------
 # Push a value into an Azure Key Vault - a secret, a key, or a certificate - and grant
 # object-scoped ("per item") RBAC read/use access to selected principals. This lets a
-# runbook hand exactly one vault item to specific user(s) without exposing the rest of the
+# runbook hand exactly one vault item to specific users, groups, or apps without exposing the rest of the
 # vault: access is granted on the item object only
 # (.../vaults/<vault>/{secrets|keys|certificates}/<name>), never at vault, resource group,
 # or subscription scope. Object-level access requires the vault's Azure RBAC permission
@@ -153,9 +153,9 @@ function New-RjRbKvEffectiveTag {
     $merged
 }
 
-# Splits a delimited reader list and resolves each entry to an Entra object id.
-# Accepts UPN, mail, exact display name, or an object id (object ids may also be
-# groups/service principals and are used as-is without a directory lookup).
+# Splits a delimited reader list and resolves each entry to an Entra principal object id.
+# Accepts user UPN/mail, or an exact display name / object id for users, groups, and service
+# principals. Object ids are used as-is without a directory lookup.
 function Resolve-RjRbKvReader {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $ReaderUsers
@@ -180,7 +180,8 @@ function Resolve-RjRbKvReader {
             continue
         }
 
-        # Try UPN, then mail, then fall back to an exact display-name match.
+        # Try user UPN, then mail, then fall back to exact display-name matches across
+        # users, groups, and service principals.
         $user = $null
         if ($id -like '*@*') {
             $user = Get-AzADUser -UserPrincipalName $id -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -189,22 +190,57 @@ function Resolve-RjRbKvReader {
             }
         }
 
-        $userMatches = if ($user) { @($user) } else { @(Get-AzADUser -DisplayName $id -ErrorAction SilentlyContinue | Where-Object { $_ }) }
+        $principalMatches = @()
 
-        if (@($userMatches).Count -eq 0) {
-            throw "Could not resolve '$id' to a Microsoft Entra user. Use a UPN, mail address, exact display name, or object id."
+        if ($user) {
+            $principalMatches += [pscustomobject]@{
+                Input       = $id
+                ObjectId    = [guid]$user.Id
+                DisplayName = $user.DisplayName
+                Type        = 'User'
+            }
         }
-        if (@($userMatches).Count -gt 1) {
-            $hint = (@($userMatches) | ForEach-Object { "$($_.DisplayName) [$($_.Id)]" }) -join '; '
-            throw "'$id' resolved to multiple users. Please use the object id. Matches: $hint"
+        else {
+            $userMatches = @(Get-AzADUser -DisplayName $id -ErrorAction SilentlyContinue | Where-Object { $_ })
+            foreach ($userMatch in $userMatches) {
+                $principalMatches += [pscustomobject]@{
+                    Input       = $id
+                    ObjectId    = [guid]$userMatch.Id
+                    DisplayName = $userMatch.DisplayName
+                    Type        = 'User'
+                }
+            }
+
+            $groupMatches = @(Get-AzADGroup -DisplayName $id -ErrorAction SilentlyContinue | Where-Object { $_ })
+            foreach ($groupMatch in $groupMatches) {
+                $principalMatches += [pscustomobject]@{
+                    Input       = $id
+                    ObjectId    = [guid]$groupMatch.Id
+                    DisplayName = $groupMatch.DisplayName
+                    Type        = 'Group'
+                }
+            }
+
+            $servicePrincipalMatches = @(Get-AzADServicePrincipal -DisplayName $id -ErrorAction SilentlyContinue | Where-Object { $_ })
+            foreach ($servicePrincipalMatch in $servicePrincipalMatches) {
+                $principalMatches += [pscustomobject]@{
+                    Input       = $id
+                    ObjectId    = [guid]$servicePrincipalMatch.Id
+                    DisplayName = $servicePrincipalMatch.DisplayName
+                    Type        = 'ServicePrincipal'
+                }
+            }
         }
 
-        $resolved += [pscustomobject]@{
-            Input       = $id
-            ObjectId    = [guid]@($userMatches)[0].Id
-            DisplayName = @($userMatches)[0].DisplayName
-            Type        = 'User'
+        if (@($principalMatches).Count -eq 0) {
+            throw "Could not resolve '$id' to a Microsoft Entra principal. Use a user UPN/mail address, or an exact display name / object id for a user, group, or service principal."
         }
+        if (@($principalMatches).Count -gt 1) {
+            $hint = (@($principalMatches) | ForEach-Object { "$($_.DisplayName) <$($_.Type)> [$($_.ObjectId)]" }) -join '; '
+            throw "'$id' resolved to multiple principals. Please use the object id. Matches: $hint"
+        }
+
+        $resolved += @($principalMatches)[0]
     }
 
     @($resolved)
@@ -273,20 +309,21 @@ function Grant-RjRbKvObjectAccess {
             catch {
                 # Tolerate the idempotent race: a concurrent run - or role-assignment read lag
                 # that hid the assignment from the pre-check above - can make New-AzRoleAssignment
-                # report it already exists. Re-query and treat as already-granted; rethrow else.
-                if ($_.Exception.Message -match 'already exists|RoleAssignmentExists') {
-                    $already = Get-AzRoleAssignment -ObjectId $principalId -RoleDefinitionName $roleName -Scope $Scope -ErrorAction SilentlyContinue |
-                        Where-Object { $_.Scope -eq $Scope } | Select-Object -First 1
-                    $assignments += [pscustomobject]@{
-                        PrincipalObjectId = $principalId
-                        RoleDefinition    = $roleName
-                        Scope             = $Scope
-                        Created           = $false
-                        AssignmentId      = if ($already) { $already.RoleAssignmentId } else { $null }
-                    }
-                }
-                else {
+                # fail even though the desired assignment now exists. Re-query and treat that as
+                # already granted; if the assignment still is not present, rethrow the original error.
+                $already = Get-AzRoleAssignment -ObjectId $principalId -RoleDefinitionName $roleName -Scope $Scope -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Scope -eq $Scope } | Select-Object -First 1
+
+                if (-not $already) {
                     throw
+                }
+
+                $assignments += [pscustomobject]@{
+                    PrincipalObjectId = $principalId
+                    RoleDefinition    = $roleName
+                    Scope             = $Scope
+                    Created           = $false
+                    AssignmentId      = $already.RoleAssignmentId
                 }
             }
         }
@@ -330,17 +367,19 @@ function Get-RjRbKvPortalTenantSegment {
     $ctx = Get-AzContext -ErrorAction SilentlyContinue
     $tenantId = if ($ctx -and $ctx.Tenant) { $ctx.Tenant.Id } else { $null }
 
-    try {
-        $tenant = Get-AzTenant -ErrorAction Stop | Where-Object { (-not $tenantId) -or ($_.Id -eq $tenantId) } | Select-Object -First 1
-        $domain = $null
-        if ($tenant) {
-            if ($tenant.DefaultDomain) { $domain = $tenant.DefaultDomain }
-            elseif (@($tenant.Domains).Count -gt 0) { $domain = @($tenant.Domains)[0] }
+    if (Get-Command -Name Get-AzTenant -ErrorAction SilentlyContinue) {
+        try {
+            $tenant = Get-AzTenant -ErrorAction Stop | Where-Object { (-not $tenantId) -or ($_.Id -eq $tenantId) } | Select-Object -First 1
+            $domain = $null
+            if ($tenant) {
+                if ($tenant.DefaultDomain) { $domain = $tenant.DefaultDomain }
+                elseif (@($tenant.Domains).Count -gt 0) { $domain = @($tenant.Domains)[0] }
+            }
+            if ($domain) { return "#@$domain" }
         }
-        if ($domain) { return "#@$domain" }
-    }
-    catch {
-        Write-RjRbLog "Could not resolve tenant default domain ($($_.Exception.Message)); using tenant id for portal URL."
+        catch {
+            Write-RjRbLog "Could not resolve tenant default domain ($($_.Exception.Message)); using tenant id for portal URL."
+        }
     }
 
     if ($tenantId) { return "#@$tenantId" }
@@ -463,7 +502,7 @@ function Publish-RjRbKeyVaultSecret {
         built-in 'Key Vault Secrets User' role on the secret object scope only
         (.../vaults/<vault>/secrets/<name>) to the supplied reader principals. No access is
         granted at the vault, resource group, or subscription scope, so a value can be handed
-        to specific user(s) without exposing the rest of the vault.
+        to specific principals without exposing the rest of the vault.
 
         The target vault must use the Azure RBAC permission model. The secret value is never
         written to output or the RealmJoin/runbook log. By default the function returns the
@@ -485,8 +524,9 @@ function Publish-RjRbKeyVaultSecret {
 
         .PARAMETER ReaderUsers
         Principals that should be able to read this exact secret. Accepts an array and/or
-        comma/semicolon/newline separated UPNs, mail addresses, exact display names, or object
-        ids. Optional - omit to only push the secret without granting access.
+        comma/semicolon/newline separated user UPNs/mail addresses, or exact display names /
+        object ids for users, groups, and service principals. Optional - omit to only push the
+        secret without granting access.
 
         .PARAMETER KeyVaultResourceGroupName
         Resource group of the vault. Optional, but disambiguates same-named lookups.
@@ -801,7 +841,18 @@ function Publish-RjRbKeyVaultCertificate {
     )
 
     $importCmd = if ($PSCmdlet.ParameterSetName -eq 'Import') { 'Import-AzKeyVaultCertificate' } else { 'Add-AzKeyVaultCertificate' }
-    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets ('Get-AzContext', 'Get-AzKeyVault', $importCmd, 'Get-AzRoleAssignment', 'New-AzRoleAssignment') `
+        $requiredCmdlets = @('Get-AzContext', 'Get-AzKeyVault', 'Get-AzRoleAssignment', 'New-AzRoleAssignment')
+        if ($PSCmdlet.ParameterSetName -eq 'Import') {
+            $requiredCmdlets += 'Import-AzKeyVaultCertificate'
+        }
+        else {
+            $requiredCmdlets += 'Add-AzKeyVaultCertificate', 'Get-AzKeyVaultCertificateOperation', 'Get-AzKeyVaultCertificate'
+            if ($PSCmdlet.ParameterSetName -eq 'Create') {
+                $requiredCmdlets += 'New-AzKeyVaultCertificatePolicy'
+            }
+        }
+
+        $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets $requiredCmdlets `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
     $readerInfo = Get-RjRbKvReader -ReaderUsers $ReaderUsers
@@ -835,7 +886,10 @@ function Publish-RjRbKeyVaultCertificate {
         }
 
         if ($PSCmdlet.ShouldProcess("certificate '$CertificateName' in vault '$KeyVaultName'", 'Create certificate and grant object-scoped read access')) {
-            Write-RjRbLog "Creating certificate '$CertificateName' in Key Vault '$KeyVaultName' (issuer '$IssuerName')"
+            $issuerLabel = if ($PSCmdlet.ParameterSetName -eq 'CreatePolicy') { $null } else { $IssuerName }
+            $logMessage =  "Creating certificate '$CertificateName' in Key Vault '$KeyVaultName' (issuer '$issuerLabel')"
+
+            Write-RjRbLog $logMessage
             Add-AzKeyVaultCertificate -VaultName $KeyVaultName -Name $CertificateName -CertificatePolicy $policy -Tag $effectiveTag -ErrorAction Stop | Out-Null
             # Creation is asynchronous - wait for issuance and read the issued certificate back.
             $item = Wait-RjRbKvCertificate -VaultName $KeyVaultName -Name $CertificateName -TimeoutSeconds $IssuanceTimeoutSeconds
