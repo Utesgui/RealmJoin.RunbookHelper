@@ -569,7 +569,10 @@ function Publish-RjRbKeyVaultSecret {
 
     $effectiveTag = New-RjRbKvEffectiveTag -ItemType Secret -Tag $Tag
     # Convert to a SecureString only at the boundary; keep the value out of logs/output.
-    $secureValue = if ($SecretValue.Length -eq 0) { [securestring]::new() } else { ConvertTo-SecureString -String $SecretValue -AsPlainText -Force }
+    if ($SecretValue.Length -eq 0) {
+        throw "SecretValue cannot be empty. Azure Key Vault rejects empty secret values."
+    }
+    $secureValue = ConvertTo-SecureString -String $SecretValue -AsPlainText -Force
 
     $item = $null
     if ($PSCmdlet.ShouldProcess("secret '$SecretName' in vault '$KeyVaultName'", 'Set secret and grant object-scoped read access')) {
