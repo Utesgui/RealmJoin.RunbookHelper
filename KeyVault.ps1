@@ -685,7 +685,7 @@ function Publish-RjRbKeyVaultKey {
         [string[]] $Return = @('PortalItemVersionUrl')
     )
 
-    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Add-AzKeyVaultKey', 'Get-AzRoleAssignment', 'New-AzRoleAssignment' `
+    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Add-AzKeyVaultKey', 'Get-AzRoleAssignment', 'New-AzRoleAssignment', 'Get-AzADUser', 'Get-AzADGroup', 'Get-AzADServicePrincipal' `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
     $readerInfo = Get-RjRbKvReader -ReaderUsers $ReaderUsers
