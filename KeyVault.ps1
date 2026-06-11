@@ -840,19 +840,26 @@ function Publish-RjRbKeyVaultCertificate {
         [string[]] $Return = @('PortalItemVersionUrl')
     )
 
-    $importCmd = if ($PSCmdlet.ParameterSetName -eq 'Import') { 'Import-AzKeyVaultCertificate' } else { 'Add-AzKeyVaultCertificate' }
-        $requiredCmdlets = @('Get-AzContext', 'Get-AzKeyVault', 'Get-AzRoleAssignment', 'New-AzRoleAssignment')
-        if ($PSCmdlet.ParameterSetName -eq 'Import') {
-            $requiredCmdlets += 'Import-AzKeyVaultCertificate'
+    $requiredCmdlets = @(
+        'Get-AzContext',
+        'Get-AzKeyVault',
+        'Get-AzRoleAssignment',
+        'New-AzRoleAssignment',
+        'Get-AzADUser',
+        'Get-AzADGroup',
+        'Get-AzADServicePrincipal'
+    )
+    if ($PSCmdlet.ParameterSetName -eq 'Import') {
+        $requiredCmdlets += 'Import-AzKeyVaultCertificate'
+    }
+    else {
+        $requiredCmdlets += 'Add-AzKeyVaultCertificate', 'Get-AzKeyVaultCertificateOperation', 'Get-AzKeyVaultCertificate'
+        if ($PSCmdlet.ParameterSetName -eq 'Create') {
+            $requiredCmdlets += 'New-AzKeyVaultCertificatePolicy'
         }
-        else {
-            $requiredCmdlets += 'Add-AzKeyVaultCertificate', 'Get-AzKeyVaultCertificateOperation', 'Get-AzKeyVaultCertificate'
-            if ($PSCmdlet.ParameterSetName -eq 'Create') {
-                $requiredCmdlets += 'New-AzKeyVaultCertificatePolicy'
-            }
-        }
+    }
 
-        $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets $requiredCmdlets `
+    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets $requiredCmdlets `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
     $readerInfo = Get-RjRbKvReader -ReaderUsers $ReaderUsers
