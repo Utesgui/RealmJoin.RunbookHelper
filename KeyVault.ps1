@@ -559,7 +559,7 @@ function Publish-RjRbKeyVaultSecret {
         [string[]] $Return = @('PortalItemVersionUrl')
     )
 
-    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Set-AzKeyVaultSecret', 'Get-AzRoleAssignment', 'New-AzRoleAssignment' `
+    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Set-AzKeyVaultSecret', 'Get-AzRoleAssignment', 'New-AzRoleAssignment', 'Get-AzADUser', 'Get-AzADGroup', 'Get-AzADServicePrincipal' `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
     # Resolve readers up front so we never push a secret we then cannot share.
