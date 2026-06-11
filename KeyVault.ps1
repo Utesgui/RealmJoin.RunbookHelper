@@ -11,14 +11,14 @@
 #   Publish-RjRbKeyVaultSecret       - set a secret value
 #   Publish-RjRbKeyVaultKey          - create or import a key
 #   Publish-RjRbKeyVaultCertificate  - create (self-signed/issuer) or import a certificate
-# Private: rjRbKv* helpers (context, vault lookup, scope/role mapping, reader resolution,
-#          RBAC grant, certificate wait, portal URL building, result shaping)
+# Private: Verb-RjRbKv* helpers (context, vault lookup, scope/role mapping, reader
+#          resolution, RBAC grant, certificate wait, portal URL building, result shaping)
 #
 # Azure cmdlet dependencies (declare in the consuming runbook via #Requires):
 #   Az.Accounts, Az.KeyVault, Az.Resources
 
 # Built-in RBAC role that grants data-plane read/use access to one Key Vault item kind.
-function rjRbKvGetReadRoleName {
+function Get-RjRbKvReadRoleName {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('Secret', 'Certificate', 'Key')][string] $ItemType
     )
@@ -31,7 +31,7 @@ function rjRbKvGetReadRoleName {
 }
 
 # Maps an item type to the ARM child-resource segment used in scopes and data-plane URIs.
-function rjRbKvGetItemSegment {
+function Get-RjRbKvItemSegment {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('Secret', 'Certificate', 'Key')][string] $ItemType
     )
@@ -45,18 +45,18 @@ function rjRbKvGetItemSegment {
 
 # Builds the ARM scope of a single logical Key Vault object. RBAC is object-scoped,
 # not version-scoped, so the version is intentionally not part of the scope.
-function rjRbKvGetObjectScope {
+function Get-RjRbKvObjectScope {
     param(
         [Parameter(Mandatory = $true)][string] $VaultResourceId,
         [Parameter(Mandatory = $true)][ValidateSet('Secret', 'Certificate', 'Key')][string] $ItemType,
         [Parameter(Mandatory = $true)][string] $ItemName
     )
 
-    '{0}/{1}/{2}' -f $VaultResourceId.TrimEnd('/'), (rjRbKvGetItemSegment -ItemType $ItemType), $ItemName
+    '{0}/{1}/{2}' -f $VaultResourceId.TrimEnd('/'), (Get-RjRbKvItemSegment -ItemType $ItemType), $ItemName
 }
 
 # Throws a single clear error if any required Az cmdlet is missing from the runbook session.
-function rjRbKvAssertCmdlets {
+function Test-RjRbKvRequiredCmdlet {
     param(
         [Parameter(Mandatory = $true)][string[]] $Names
     )
@@ -70,7 +70,7 @@ function rjRbKvAssertCmdlets {
 
 # Ensures an Az context (reusing the module's connection helper) and optionally pins the
 # target subscription before any vault operation.
-function rjRbKvEnsureAzContext {
+function Set-RjRbKvAzContext {
     param(
         [string] $SubscriptionId
     )
@@ -87,7 +87,7 @@ function rjRbKvEnsureAzContext {
 
 # Resolves the target vault once so any vault/permission problem fails early with one
 # clear error instead of surfacing later as a confusing data-plane failure.
-function rjRbKvGetVault {
+function Get-RjRbKvVault {
     param(
         [Parameter(Mandatory = $true)][string] $VaultName,
         [string] $ResourceGroupName
@@ -113,7 +113,7 @@ function rjRbKvGetVault {
 }
 
 # Object-scoped access is only possible with the Azure RBAC permission model.
-function rjRbKvAssertRbacVault {
+function Test-RjRbKvRbacVault {
     param(
         [Parameter(Mandatory = $true)] $Vault
     )
@@ -126,7 +126,7 @@ function rjRbKvAssertRbacVault {
 # Verifies the required Az cmdlets are present, ensures an Az context (optionally pinning
 # the subscription), resolves the target vault, and confirms it uses the Azure RBAC model.
 # Returns the validated vault object; it does not create or modify Azure resources.
-function rjRbKvGetValidatedTargetVault {
+function Get-RjRbKvValidatedTargetVault {
     param(
         [Parameter(Mandatory = $true)][string[]] $RequiredCmdlets,
         [Parameter(Mandatory = $true)][string] $KeyVaultName,
@@ -134,15 +134,15 @@ function rjRbKvGetValidatedTargetVault {
         [string] $SubscriptionId
     )
 
-    rjRbKvAssertCmdlets -Names $RequiredCmdlets
-    rjRbKvEnsureAzContext -SubscriptionId $SubscriptionId
-    $vault = rjRbKvGetVault -VaultName $KeyVaultName -ResourceGroupName $KeyVaultResourceGroupName
-    rjRbKvAssertRbacVault -Vault $vault
+    Test-RjRbKvRequiredCmdlet -Names $RequiredCmdlets
+    Set-RjRbKvAzContext -SubscriptionId $SubscriptionId
+    $vault = Get-RjRbKvVault -VaultName $KeyVaultName -ResourceGroupName $KeyVaultResourceGroupName
+    Test-RjRbKvRbacVault -Vault $vault
     $vault
 }
 
 # Merges caller tags over a default Source tag (caller values win) for traceability.
-function rjRbKvMergeSourceTag {
+function New-RjRbKvEffectiveTag {
     param(
         [ValidateSet('Secret', 'Certificate', 'Key')][string] $ItemType,
         [hashtable] $Tag
@@ -156,7 +156,7 @@ function rjRbKvMergeSourceTag {
 # Splits a delimited reader list and resolves each entry to an Entra object id.
 # Accepts UPN, mail, exact display name, or an object id (object ids may also be
 # groups/service principals and are used as-is without a directory lookup).
-function rjRbKvResolveReaders {
+function Resolve-RjRbKvReader {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $ReaderUsers
     )
@@ -212,12 +212,12 @@ function rjRbKvResolveReaders {
 
 # Resolves the reader list to principals plus de-duplicated object ids and logs a one-line
 # summary. Shared by all three publish functions so the resolve/log/dedupe logic lives once.
-function rjRbKvGetReaders {
+function Get-RjRbKvReader {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $ReaderUsers
     )
 
-    $readers = @(rjRbKvResolveReaders -ReaderUsers $ReaderUsers)
+    $readers = @(Resolve-RjRbKvReader -ReaderUsers $ReaderUsers)
     if (@($readers).Count -gt 0) {
         Write-RjRbLog "Resolved $(@($readers).Count) reader principal(s): $((@($readers) | ForEach-Object { $_.DisplayName }) -join ', ')"
     }
@@ -231,7 +231,7 @@ function rjRbKvGetReaders {
 # Idempotently assigns the read/use role for an item type at the given object scope.
 # Only an existing assignment on the exact scope counts as "already granted"; broader
 # inherited assignments (vault/RG/subscription) are intentionally left untouched.
-function rjRbKvGrantObjectAccess {
+function Grant-RjRbKvObjectAccess {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory = $true)][guid[]] $PrincipalObjectIds,
@@ -239,7 +239,7 @@ function rjRbKvGrantObjectAccess {
         [Parameter(Mandatory = $true)][string] $Scope
     )
 
-    $roleName = rjRbKvGetReadRoleName -ItemType $ItemType
+    $roleName = Get-RjRbKvReadRoleName -ItemType $ItemType
     $assignments = @()
 
     foreach ($objectId in (@($PrincipalObjectIds) | Select-Object -Unique)) {
@@ -297,7 +297,7 @@ function rjRbKvGrantObjectAccess {
 
 # Waits for an asynchronous certificate issuance (create) to finish, then returns the
 # issued certificate. Self-signed certs usually complete within seconds.
-function rjRbKvWaitCertificate {
+function Wait-RjRbKvCertificate {
     param(
         [Parameter(Mandatory = $true)][string] $VaultName,
         [Parameter(Mandatory = $true)][string] $Name,
@@ -326,7 +326,7 @@ function rjRbKvWaitCertificate {
 
 # Returns the "#@domain" (or "#@tenantId") segment used by Azure Portal deep links.
 # The verified default domain yields nicer links; the tenant id is the fallback.
-function rjRbKvGetPortalTenantSegment {
+function Get-RjRbKvPortalTenantSegment {
     $ctx = Get-AzContext -ErrorAction SilentlyContinue
     $tenantId = if ($ctx -and $ctx.Tenant) { $ctx.Tenant.Id } else { $null }
 
@@ -348,7 +348,7 @@ function rjRbKvGetPortalTenantSegment {
 }
 
 # Builds the data-plane URI and the portal deep links for a published item version.
-function rjRbKvNewObjectUrls {
+function New-RjRbKvObjectUrl {
     param(
         [Parameter(Mandatory = $true)][string] $VaultName,
         [Parameter(Mandatory = $true)][string] $VaultResourceId,
@@ -359,7 +359,7 @@ function rjRbKvNewObjectUrls {
         [string] $ObjectScope
     )
 
-    $segment = rjRbKvGetItemSegment -ItemType $ItemType
+    $segment = Get-RjRbKvItemSegment -ItemType $ItemType
     # Portal "asset" blade type per item kind (used for the exact-version deep link).
     $assetType = switch ($ItemType) {
         'Secret' { 'Secret' }
@@ -399,7 +399,7 @@ function rjRbKvNewObjectUrls {
 }
 
 # Assembles the full, uniform result object shared by all three publish functions.
-function rjRbKvBuildResult {
+function New-RjRbKvPublishResult {
     param(
         [Parameter(Mandatory = $true)][string] $KeyVaultName,
         [Parameter(Mandatory = $true)] $Vault,
@@ -411,10 +411,10 @@ function rjRbKvBuildResult {
         [object[]] $RoleAssignments
     )
 
-    $tenantSegment = rjRbKvGetPortalTenantSegment
+    $tenantSegment = Get-RjRbKvPortalTenantSegment
     # $Item is null under -WhatIf; fall back to the logical (unversioned) URLs.
     $version = if ($Item) { $Item.Version } else { $null }
-    $urls = rjRbKvNewObjectUrls -VaultName $KeyVaultName -VaultResourceId $Vault.ResourceId -ItemType $ItemType `
+    $urls = New-RjRbKvObjectUrl -VaultName $KeyVaultName -VaultResourceId $Vault.ResourceId -ItemType $ItemType `
         -ItemName $ItemName -Version $version -TenantSegment $tenantSegment -ObjectScope $ObjectScope
 
     [pscustomobject]@{
@@ -435,7 +435,7 @@ function rjRbKvBuildResult {
 
 # Shapes the function output from the full result per the caller's -Return selection:
 # a single value -> scalar; several values -> subset object; 'All' -> full object.
-function rjRbKvSelectReturn {
+function Select-RjRbKvReturnValue {
     param(
         [Parameter(Mandatory = $true)][pscustomobject] $Result,
         [Parameter(Mandatory = $true)][string[]] $Return
@@ -519,15 +519,15 @@ function Publish-RjRbKeyVaultSecret {
         [string[]] $Return = @('PortalItemVersionUrl')
     )
 
-    $vault = rjRbKvGetValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Set-AzKeyVaultSecret', 'Get-AzRoleAssignment', 'New-AzRoleAssignment' `
+    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Set-AzKeyVaultSecret', 'Get-AzRoleAssignment', 'New-AzRoleAssignment' `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
     # Resolve readers up front so we never push a secret we then cannot share.
-    $readerInfo = rjRbKvGetReaders -ReaderUsers $ReaderUsers
+    $readerInfo = Get-RjRbKvReader -ReaderUsers $ReaderUsers
     $readers = @($readerInfo.Readers)
     $readerIds = $readerInfo.ObjectIds
 
-    $effectiveTag = rjRbKvMergeSourceTag -ItemType Secret -Tag $Tag
+    $effectiveTag = New-RjRbKvEffectiveTag -ItemType Secret -Tag $Tag
     # Convert to a SecureString only at the boundary; keep the value out of logs/output.
     $secureValue = if ($SecretValue.Length -eq 0) { [securestring]::new() } else { ConvertTo-SecureString -String $SecretValue -AsPlainText -Force }
 
@@ -537,15 +537,15 @@ function Publish-RjRbKeyVaultSecret {
         $item = Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue $secureValue -Tag $effectiveTag -ErrorAction Stop
     }
 
-    $objectScope = rjRbKvGetObjectScope -VaultResourceId $vault.ResourceId -ItemType Secret -ItemName $SecretName
+    $objectScope = Get-RjRbKvObjectScope -VaultResourceId $vault.ResourceId -ItemType Secret -ItemName $SecretName
     $roleAssignments = @()
     if ($item -and (@($readerIds).Count -gt 0)) {
-        $roleAssignments = @(rjRbKvGrantObjectAccess -PrincipalObjectIds $readerIds -ItemType Secret -Scope $objectScope)
+        $roleAssignments = @(Grant-RjRbKvObjectAccess -PrincipalObjectIds $readerIds -ItemType Secret -Scope $objectScope)
     }
 
-    $result = rjRbKvBuildResult -KeyVaultName $KeyVaultName -Vault $vault -ItemType Secret -ItemName $SecretName `
+    $result = New-RjRbKvPublishResult -KeyVaultName $KeyVaultName -Vault $vault -ItemType Secret -ItemName $SecretName `
         -Item $item -ObjectScope $objectScope -Readers $readers -RoleAssignments $roleAssignments
-    rjRbKvSelectReturn -Result $result -Return $Return
+    Select-RjRbKvReturnValue -Result $result -Return $Return
 }
 
 function Publish-RjRbKeyVaultKey {
@@ -645,14 +645,14 @@ function Publish-RjRbKeyVaultKey {
         [string[]] $Return = @('PortalItemVersionUrl')
     )
 
-    $vault = rjRbKvGetValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Add-AzKeyVaultKey', 'Get-AzRoleAssignment', 'New-AzRoleAssignment' `
+    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets 'Get-AzContext', 'Get-AzKeyVault', 'Add-AzKeyVaultKey', 'Get-AzRoleAssignment', 'New-AzRoleAssignment' `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
-    $readerInfo = rjRbKvGetReaders -ReaderUsers $ReaderUsers
+    $readerInfo = Get-RjRbKvReader -ReaderUsers $ReaderUsers
     $readers = @($readerInfo.Readers)
     $readerIds = $readerInfo.ObjectIds
 
-    $effectiveTag = rjRbKvMergeSourceTag -ItemType Key -Tag $Tag
+    $effectiveTag = New-RjRbKvEffectiveTag -ItemType Key -Tag $Tag
     $isImport = $PSCmdlet.ParameterSetName -eq 'Import'
 
     # Build the Add-AzKeyVaultKey arguments for the chosen mode (import vs. generate).
@@ -682,15 +682,15 @@ function Publish-RjRbKeyVaultKey {
         $item = Add-AzKeyVaultKey @keyArgs
     }
 
-    $objectScope = rjRbKvGetObjectScope -VaultResourceId $vault.ResourceId -ItemType Key -ItemName $KeyName
+    $objectScope = Get-RjRbKvObjectScope -VaultResourceId $vault.ResourceId -ItemType Key -ItemName $KeyName
     $roleAssignments = @()
     if ($item -and (@($readerIds).Count -gt 0)) {
-        $roleAssignments = @(rjRbKvGrantObjectAccess -PrincipalObjectIds $readerIds -ItemType Key -Scope $objectScope)
+        $roleAssignments = @(Grant-RjRbKvObjectAccess -PrincipalObjectIds $readerIds -ItemType Key -Scope $objectScope)
     }
 
-    $result = rjRbKvBuildResult -KeyVaultName $KeyVaultName -Vault $vault -ItemType Key -ItemName $KeyName `
+    $result = New-RjRbKvPublishResult -KeyVaultName $KeyVaultName -Vault $vault -ItemType Key -ItemName $KeyName `
         -Item $item -ObjectScope $objectScope -Readers $readers -RoleAssignments $roleAssignments
-    rjRbKvSelectReturn -Result $result -Return $Return
+    Select-RjRbKvReturnValue -Result $result -Return $Return
 }
 
 function Publish-RjRbKeyVaultCertificate {
@@ -801,14 +801,14 @@ function Publish-RjRbKeyVaultCertificate {
     )
 
     $importCmd = if ($PSCmdlet.ParameterSetName -eq 'Import') { 'Import-AzKeyVaultCertificate' } else { 'Add-AzKeyVaultCertificate' }
-    $vault = rjRbKvGetValidatedTargetVault -RequiredCmdlets ('Get-AzContext', 'Get-AzKeyVault', $importCmd, 'Get-AzRoleAssignment', 'New-AzRoleAssignment') `
+    $vault = Get-RjRbKvValidatedTargetVault -RequiredCmdlets ('Get-AzContext', 'Get-AzKeyVault', $importCmd, 'Get-AzRoleAssignment', 'New-AzRoleAssignment') `
         -KeyVaultName $KeyVaultName -KeyVaultResourceGroupName $KeyVaultResourceGroupName -SubscriptionId $SubscriptionId
 
-    $readerInfo = rjRbKvGetReaders -ReaderUsers $ReaderUsers
+    $readerInfo = Get-RjRbKvReader -ReaderUsers $ReaderUsers
     $readers = @($readerInfo.Readers)
     $readerIds = $readerInfo.ObjectIds
 
-    $effectiveTag = rjRbKvMergeSourceTag -ItemType Certificate -Tag $Tag
+    $effectiveTag = New-RjRbKvEffectiveTag -ItemType Certificate -Tag $Tag
     $isImport = $PSCmdlet.ParameterSetName -eq 'Import'
 
     $item = $null
@@ -838,24 +838,24 @@ function Publish-RjRbKeyVaultCertificate {
             Write-RjRbLog "Creating certificate '$CertificateName' in Key Vault '$KeyVaultName' (issuer '$IssuerName')"
             Add-AzKeyVaultCertificate -VaultName $KeyVaultName -Name $CertificateName -CertificatePolicy $policy -Tag $effectiveTag -ErrorAction Stop | Out-Null
             # Creation is asynchronous - wait for issuance and read the issued certificate back.
-            $item = rjRbKvWaitCertificate -VaultName $KeyVaultName -Name $CertificateName -TimeoutSeconds $IssuanceTimeoutSeconds
+            $item = Wait-RjRbKvCertificate -VaultName $KeyVaultName -Name $CertificateName -TimeoutSeconds $IssuanceTimeoutSeconds
         }
     }
 
-    $objectScope = rjRbKvGetObjectScope -VaultResourceId $vault.ResourceId -ItemType Certificate -ItemName $CertificateName
+    $objectScope = Get-RjRbKvObjectScope -VaultResourceId $vault.ResourceId -ItemType Certificate -ItemName $CertificateName
     $roleAssignments = @()
     if ($item -and (@($readerIds).Count -gt 0)) {
-        $roleAssignments += @(rjRbKvGrantObjectAccess -PrincipalObjectIds $readerIds -ItemType Certificate -Scope $objectScope)
+        $roleAssignments += @(Grant-RjRbKvObjectAccess -PrincipalObjectIds $readerIds -ItemType Certificate -Scope $objectScope)
 
         # Optionally also grant read on the backing secret so readers can pull the PFX (private key).
         if ($GrantPrivateKeyAccess) {
-            $secretScope = rjRbKvGetObjectScope -VaultResourceId $vault.ResourceId -ItemType Secret -ItemName $CertificateName
+            $secretScope = Get-RjRbKvObjectScope -VaultResourceId $vault.ResourceId -ItemType Secret -ItemName $CertificateName
             Write-RjRbLog "Also granting backing-secret access for private-key (PFX) download at '$secretScope'"
-            $roleAssignments += @(rjRbKvGrantObjectAccess -PrincipalObjectIds $readerIds -ItemType Secret -Scope $secretScope)
+            $roleAssignments += @(Grant-RjRbKvObjectAccess -PrincipalObjectIds $readerIds -ItemType Secret -Scope $secretScope)
         }
     }
 
-    $result = rjRbKvBuildResult -KeyVaultName $KeyVaultName -Vault $vault -ItemType Certificate -ItemName $CertificateName `
+    $result = New-RjRbKvPublishResult -KeyVaultName $KeyVaultName -Vault $vault -ItemType Certificate -ItemName $CertificateName `
         -Item $item -ObjectScope $objectScope -Readers $readers -RoleAssignments $roleAssignments
-    rjRbKvSelectReturn -Result $result -Return $Return
+    Select-RjRbKvReturnValue -Result $result -Return $Return
 }
